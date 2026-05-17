@@ -1,7 +1,11 @@
 // Gemini API Configuration and Service
-const GEMINI_API_KEY = "AIzaSyCXUfFGgCS3yDFiLzjcXSiTlh-vIzZ9sd0";
-const GEMINI_API_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent";
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY?.trim();
+const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+const GEMINI_MODEL_FALLBACKS = [
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+];
 
 // Role-based System Instructions
 const SYSTEM_INSTRUCTIONS = {
@@ -39,6 +43,14 @@ export async function callGeminiAPI(
   request: GeminiRequest
 ): Promise<GeminiResponse> {
   try {
+    if (!GEMINI_API_KEY) {
+      return {
+        text: "",
+        error:
+          "Gemini API key is missing. Set VITE_GEMINI_API_KEY in your .env file and restart the app.",
+      };
+    }
+
     const role = request.role || "consumer";
     const systemInstruction = SYSTEM_INSTRUCTIONS[role];
 
@@ -64,10 +76,16 @@ export async function callGeminiAPI(
     // Add image if provided
     if (request.imageUrl) {
       let imageData = request.imageUrl;
+      let mimeType = "image/jpeg";
 
       // Handle data URL (base64)
       if (imageData.startsWith("data:image")) {
-        imageData = imageData.split(",")[1];
+        const [metadata, rawData = ""] = imageData.split(",", 2);
+        const mimeTypeMatch = metadata.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64$/);
+        if (mimeTypeMatch) {
+          mimeType = mimeTypeMatch[1];
+        }
+        imageData = rawData;
       } else if (
         imageData.startsWith("http://") ||
         imageData.startsWith("https://")
@@ -86,7 +104,7 @@ export async function callGeminiAPI(
 
       payload.contents[0].parts.push({
         inline_data: {
-          mime_type: "image/jpeg",
+          mime_type: mimeType,
           data: imageData,
         },
       });
@@ -101,32 +119,52 @@ export async function callGeminiAPI(
       ];
     }
 
-    const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    let lastRecoverableError = "No response from Gemini API";
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(
-        errorData.error?.message || `API Error: ${response.status}`
-      );
+    for (const model of GEMINI_MODEL_FALLBACKS) {
+      const endpoint = `${GEMINI_BASE_URL}/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage =
+          errorData.error?.message || `Gemini API error: ${response.status}`;
+
+        // Retry with a fallback model if the current model was unavailable/unsupported.
+        if (
+          response.status === 404 ||
+          /not found|unsupported|not available|invalid model/i.test(errorMessage)
+        ) {
+          lastRecoverableError = errorMessage;
+          continue;
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+
+      if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+        const text = data.candidates[0].content.parts
+          .map((part: any) => part.text || "")
+          .join("\n")
+          .trim();
+
+        if (text) {
+          return { text };
+        }
+      }
+
+      lastRecoverableError = `No response from model ${model}`;
     }
 
-    const data = await response.json();
-
-    if (data.candidates && data.candidates[0] && data.candidates[0].content) {
-      const text = data.candidates[0].content.parts
-        .map((part: any) => part.text || "")
-        .join("\n");
-
-      return { text };
-    }
-
-    return { text: "", error: "No response from API" };
+    return { text: "", error: lastRecoverableError };
   } catch (error: any) {
     console.error("Gemini API Error:", error);
     return {
@@ -690,6 +728,7 @@ export async function chatWithAssistant(
   });
   return (
     response.text ||
+    response.error ||
     "I'm sorry, I couldn't process that request. Please try again."
   );
 }
@@ -1069,6 +1108,7 @@ export async function chatWithDeliveryAssistant(
 
   return (
     response.text ||
+    response.error ||
     "I'm here to help with logistics and compliance. Please provide more details about your question."
   );
 }
