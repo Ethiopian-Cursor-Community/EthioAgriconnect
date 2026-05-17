@@ -1,0 +1,117 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return signedIn() && userDoc().data.role == 'admin';
+    }
+
+    function isCurrentUser(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function ownsPayout() {
+      return signedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow create: if signedIn() && isCurrentUser(userId);
+      allow read: if signedIn() && (isCurrentUser(userId) || isAdmin());
+      allow update: if signedIn() && (isCurrentUser(userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create: if signedIn() && (
+        isAdmin() ||
+        request.resource.data.farmerId == request.auth.uid
+      );
+      allow update, delete: if signedIn() && (
+        isAdmin() ||
+        resource.data.farmerId == request.auth.uid
+      );
+    }
+
+    match /orders/{orderId} {
+      allow create: if signedIn() && request.resource.data.consumerId == request.auth.uid;
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.consumerId == request.auth.uid ||
+        resource.data.farmerId == request.auth.uid ||
+        resource.data.deliveryManId == request.auth.uid
+      );
+      allow update: if signedIn() && (
+        isAdmin() ||
+        resource.data.consumerId == request.auth.uid ||
+        resource.data.farmerId == request.auth.uid ||
+        resource.data.deliveryManId == request.auth.uid
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /deliveries/{deliveryId} {
+      allow create: if isAdmin();
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.deliveryManId == request.auth.uid ||
+        resource.data.consumerId == request.auth.uid ||
+        resource.data.farmerId == request.auth.uid
+      );
+      allow update: if signedIn() && (
+        isAdmin() ||
+        resource.data.deliveryManId == request.auth.uid
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow create: if isAdmin();
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.userId == request.auth.uid
+      );
+      allow update, delete: if signedIn() && (
+        isAdmin() ||
+        resource.data.userId == request.auth.uid
+      );
+    }
+
+    match /payouts/{payoutId} {
+      allow create: if ownsPayout();
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.userId == request.auth.uid
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    match /ratings/{ratingId} {
+      allow read: if true;
+      allow create: if signedIn() && request.resource.data.consumerId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    match /suggestedPrices/{priceId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
